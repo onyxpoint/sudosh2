@@ -1,0 +1,257 @@
+#!/usr/bin/ruby
+
+require 'optparse'
+require 'fileutils'
+require 'zlib'
+
+class SudoshReplay
+
+  def initialize (args)
+    @to_search=''
+    @id=''
+    @multiplier=1
+    @maxwait=0
+    @outputdir=File.expand_path('~/.sudosh_replay')
+    @sessions=Array.new
+    @replay_stats={}
+    @replay_stats["time"]=0.0
+    @replay_stats["bytes"]=0
+    @replay_stats["count"]=0
+    
+    begin
+      parse(args)
+    rescue Interrupt
+      nil
+    rescue => err
+      $stderr.puts "Error: #{err}"
+    end
+  end
+
+private
+
+  def parse (args)
+    opts = OptionParser.new do |opts|
+      opts.banner = "Usage: sudosh_replay.rb [options]"
+
+      opts.on("-s", "--search x,y,z", 
+          "Comma-seperated list of files or directories to look for session ids in.") do |list|
+        @to_search = list.split(',')
+      end
+
+      opts.on("-i", "--id NUM", "Session to replay.") do |id|
+        @id = id
+      end
+
+      opts.on("-m", "--multiplier VAL", "Replay speed multiplier.") do |val|
+        @multiplier = val
+      end
+
+      opts.on("-w", "--max-wait VAL", "Maximum wait between user inputs.") do |val|
+        @maxwait = val
+      end
+
+      opts.on("-o", "--output-dir PATH", 
+          "Directory to store session logs parsed from syslog.") do |path|
+        @outputdir = File.expand_path(path)
+      end
+
+      opts.on_tail("-h", "--help", "Show this message") do
+        puts opts
+        exit
+      end
+    end
+
+    opts.parse!(args)
+    if @to_search.eql?('') then
+      puts opts
+      exit
+    elsif @id.eql?('')  then
+      find_sessions(@to_search)
+      print_sessions
+      exit
+    else
+      find_sessions(@to_search)
+      found = false
+      time_adjustment = 0
+      @sessions.each do |session|
+        if !found && session =~ /#{@id}/ then
+          found = true
+          dir = get_dir_from_session(session)
+          script = File.open("#{dir}/script", 'r')
+          time = File.open("#{dir}/time", 'r')
+
+          time.each do |line|
+            t = line.split(/\s+/)
+            if t[0].to_f < @maxwait.to_f then
+              @replay_stats["time"] += t[0].to_f
+            else
+              @replay_stats["time"] += @maxwait.to_f
+            end
+            @replay_stats["bytes"] += t[1].to_i
+            @replay_stats["count"] += 1
+
+            if (t[0].to_f < @maxwait.to_f || @maxwait.to_f == 0) && (@multiplier.to_f > 0) then
+              sleep(t[0].to_f / @multiplier.to_f)
+            elsif (@multiplier.to_f > 0 && @maxwait.to_f != 0)
+              sleep(@maxwait.to_f)
+            end
+
+            if t[1].to_i > time_adjustment then
+              s = script.read(t[1].to_i - time_adjustment)
+              time_adjustment = 0
+              while s !~ /#\d\d\d\Z/ && s =~ /#\d*\Z/  && !s.nil? do
+                s.concat(script.read(1))
+                time_adjustment += 1
+              end
+              if !s.nil? then
+                s.gsub!(/#\d\d\d/) { |esc| esc.sub(/#/,'').oct.chr}
+                print s
+                STDOUT.flush
+              end
+            else
+              time_adjustment -= t[1].to_i
+            end
+          end
+          s=script.read(1)
+          avg=@replay_stats["time"] / @replay_stats["bytes"]
+          while !s.nil? do
+            while s !~ /#\d\d\d\Z/ && s =~ /#\d*\Z/ do
+              s.concat(script.read(1))
+              time_adjustment += 1
+            end
+            if !s.nil? then
+              s.gsub!(/#\d\d\d/) { |esc| esc.sub(/#/,'').oct.chr}
+              print s
+              STDOUT.flush
+              sleep(avg)
+              s=script.read(1)
+            else
+              break
+            end
+          end
+          puts
+        end
+      end
+      if !found then
+        $stderr.puts "Error: Did not find session #{@id}"
+        print_sessions
+        exit
+      end
+    end
+  end
+  
+  def get_dir_from_session(session)
+    dir = @outputdir + "/" + session.split(" ")[0].gsub(/[\[\]]/, '') + "_" + session.split(" ")[1].sub(':', '_')
+    dir
+  end
+
+  def find_sessions(search, readonly=false)
+    if !readonly && !File.directory?(@outputdir) then
+      FileUtils.mkdir_p(@outputdir)
+    end
+
+    if search.is_a? Array then
+      search.each do |s|
+        find_sessions(s)
+      end
+    else
+      # directory of output from this script
+      if File.directory?(File.expand_path(search)) then
+        Dir.entries(File.expand_path(search)).each do |file|
+          file = "#{File.expand_path(search)}/#{file}"
+          if File.directory?(file) && file !~ /\.+\Z/  then
+            find_sessions(file)
+          elsif File.file?(file) && file =~ /(time|msg)\Z/ then
+            get_session_from_dir(File.expand_path(search))
+            break
+          elsif File.file?(file) &&  file =~ /(\.log|\.gz|\.gzip)\Z/ then
+            parse_syslog_file(file, readonly)
+          end
+        end
+      # rsyslog files
+      elsif File.file?(File.expand_path(search)) then
+        if search =~ /(\.log|\.gz|\.gzip)\Z/ then
+          parse_syslog_file(search, readonly)
+        end
+      else
+        puts "File #{search} does not exist or is not editable. Please verify your path and permissions."
+      end
+    end
+  end
+
+  def get_session_from_dir(dir)
+    subdir = dir.split('/').last
+    parts = subdir.split('_')
+    @sessions.push("[#{parts[0]}] #{parts[1]}:#{parts[2]}")
+  end
+
+  def parse_syslog_file(search, readonly=false)
+    begin
+      file = Zlib::GzipReader.open(File.expand_path(search))
+    rescue
+      file = File.open(File.expand_path(search), 'r')
+    end
+    file.each do |line|
+      l = line.split(/: /)
+      if l[1] =~ /\[\d+\]/ then
+        @sessions.push("#{l[1]} #{l[3]}")
+        dir = get_dir_from_session("#{l[1]} #{l[3]}")
+        if !readonly && !File.directory?(dir) then
+          FileUtils.mkdir(dir)
+        else
+          if !readonly && File.file?("#{dir}/script") then
+            File.delete("#{dir}/script")
+          end
+          if !readonly && File.file?("#{dir}/time") then
+            File.delete("#{dir}/time")
+          end
+        end
+      end
+    end
+
+    if !readonly then
+      file.rewind
+      file.each do |line|
+        l = line.split(/: /)
+        if l[1] =~ /\[\d+\]/ then
+          dir = get_dir_from_session("#{l[1]} #{l[3]}")
+          if l[2] =~ /msg/ then
+            msg = File.open("#{dir}/script", "a")
+            l.delete_at(3)
+            l.delete_at(2)
+            l.delete_at(1)
+            l.delete_at(0)
+            msg.write("#{l.join(": ")}")
+            msg.close
+          elsif l[2] =~ /time/ then
+            time = File.open("#{dir}/time", "a")
+            l.delete_at(3)
+            l.delete_at(2)
+            l.delete_at(1)
+            l.delete_at(0)
+            time.write("#{l.join(' ').gsub(':','').split(/#012/).join("\n").chomp}")
+            time.close
+          else
+            puts l.join(": ")
+          end
+        end
+      end
+    end
+  end
+
+  def print_sessions
+    puts "session id".ljust(20) + "user from".ljust(30) + "user to".ljust(30)
+    puts '-' * 80
+
+    @sessions.uniq!
+    @sessions.sort!
+    @sessions.each do |session|
+      s = session.split(" ")
+      if !s[0].nil? && !s[1].nil? then
+        puts "#{s[0].gsub!(/[\[\]]/, '').ljust(20)}" + "#{s[1].split(':')[0].ljust(30)}" + "#{s[1].split(':')[1].ljust(30)}"
+      end
+    end
+  end
+end
+
+replay = SudoshReplay.new(ARGV)

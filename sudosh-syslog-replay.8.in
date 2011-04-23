@@ -1,0 +1,45 @@
+.\" Process this file with
+.\" groff -man -Tascii sudosh-replay.1
+.\"
+
+.TH SUDOSH-SYSLOG-REPLAY 8 "December 20 2007" @VERSION@ "User Manuals"
+.SH NAME
+sudosh-syslog-replay \- view and replay sudosh sessions from syslog files
+.SH SYNOPSIS
+.B sudosh-syslog-replay -s [SEARCHPATH] -i [ID] -m [MULTIPLIER] -w [MAXWAIT]
+.SH DESCRIPTION
+.B sudosh-syslog-replay -s [SEARCHPATH]
+displays a list of previously recorded sudosh sessions.  Give sudosh-syslog-replay a ID and it will replay the session with the given ID.  If a multiplier of 2 is used the replay will be doubled.  If the output has long waits (if the user was away from the keyboard) the MAXWAIT would over-ride and the output would continue as normal.
+.SH OPTIONS
+.IP -o
+specify an alternate directory to store parsed sudosh syslog files in. Defaults to ~/.sudosh_replay 
+.IP -h
+display help synopsis and exit.
+.SH EXAMPLES
+View previously recorded sudosh sessions.
+
+.RS
+# sudosh-syslog-replay -s LOG_FILE_GOES_HERE
+
+.RE
+Playback a sudosh session.
+
+.RS
+# sudosh-replay -s LOG_FILE_GOES_HERE -i ID_GOES_HERE
+.RE
+
+Playback a sudosh session at twice the speed recorded.
+
+.RS
+# sudosh-replay -s LOG_FILE_GOES_HERE -i ID_GOES_HERE -m 2
+
+.RE
+Playback a sudosh session at twice the speed and only wait a maximum of half a second.
+
+.RS
+# sudosh-replay -s LOG_FILE_GOES_HERE -i ID_GOES_HERE -m 2 -w 0.5
+.SH "SEE ALSO"
+.BR sudosh (1),
+.BR sudosh.conf (5),
+.BR sudo (8),
+.BR sudosh-replay (8)

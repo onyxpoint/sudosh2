@@ -1,0 +1,7 @@
+This is a fork of sudosh2-1.0.2 from the Sourceforge project http://sudosh2.sourceforge.net/.
+
+The main point of the fork is to provide the ability to detect human typing and
+stop logging when someone is dumping a large amount of data to the terminal.
+
+Additionally, the application now has the ability to dump directly to syslog
+and a utility to replay those logs from the syslog files.
